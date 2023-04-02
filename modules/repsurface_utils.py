@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from modules.pointnet2_utils import farthest_point_sample, index_points, query_knn_point, query_ball_point
 from modules.polar_utils import xyz2sphere
-from modules.recons_utils import cal_const, cal_normal, cal_center, check_nan_umb
+from modules.recons_utils import cal_const, cal_normal, cal_center, check_nan_umb, check_nan
 
 
 def sample_and_group(npoint, radius, nsample, center, normal, feature, return_normal=True, return_polar=False, cuda=False):
@@ -151,14 +151,13 @@ def group_by_triangle(xyz, new_xyz, k=2, cuda=False):
     torch.cuda.empty_cache() # [64,512,2,3]
 
     group_xyz_norm = group_xyz - new_xyz.unsqueeze(-2) # [64,512,2,3]
-    # group_phi = xyz2sphere(group_xyz_norm)[..., 2]     # [B, N', K-1]/ [64, 512, 2]
-    # sort_idx = group_phi.argsort(dim=-1)               # [B, N', K-1]/ [64, 512, 2]
-    # sorted_group_xyz = resort_points(group_xyz_norm, sort_idx).unsqueeze(-2) # [64,512,2,1,3]
-    # sorted_group_xyz_roll = torch.roll(sorted_group_xyz, -1, dims=-3)        # [64,512,2,1,3]
-    # group_centriod = torch.zeros_like(sorted_group_xyz)                      # [64,512,2,1,3]
-    # triangle_group_xyz = torch.cat([group_centriod, sorted_group_xyz, sorted_group_xyz_roll], dim=-2)
-    return group_xyz_norm   # [64,512,2,3]
-    # 只返回这个就好了，因为只需要一个normal
+    group_phi = xyz2sphere(group_xyz_norm)[..., 2]     # [B, N', K-1]/ [64, 512, 2]
+    sort_idx = group_phi.argsort(dim=-1)               # [B, N', K-1]/ [64, 512, 2]
+    sorted_group_xyz = resort_points(group_xyz_norm, sort_idx).unsqueeze(-2) # [64,512,2,1,3]
+    sorted_group_xyz_roll = torch.roll(sorted_group_xyz, -1, dims=-3)        # [64,512,2,1,3]
+    group_centriod = torch.zeros_like(sorted_group_xyz)                      # [64,512,2,1,3]
+    triangle_group_xyz = torch.cat([group_centriod, sorted_group_xyz, sorted_group_xyz_roll], dim=-2)
+    return triangle_group_xyz   # [64,512,2,3,3]
 
 class SurfaceAbstraction(nn.Module):
     """
@@ -355,14 +354,14 @@ class TriangleSurfaceConstructor(nn.Module):
     def forward(self, center):
         center = center.permute(0, 2, 1) # permute好像是改变维度顺序
         group_xyz = group_by_triangle(center, center, k=self.k, cuda=self.cuda)
-        # [64,512,2,3]
-        # normal [64,512,3]
+        # [64,512,2,3,3]
+        # normal [64,512,2,3]
         group_normal = cal_normal(group_xyz, random_inv=self.random_inv, is_group=True)
-        # coordinate centroids [64,512,3]
+        # centroids [64,512,2,3]
         group_center = cal_center(group_xyz)
         if self.return_dist:
             # positions = sum(normals*centroids, dim=2)/sqrt(3) 位置编码？
-            group_pos = cal_const(group_normal, group_center) # [64,512,1]
+            group_pos = cal_const(group_normal, group_center) # [64,512,2,1]
             # 去除 group_normal,group_center,group_pos中 Nan
             group_normal, group_center, group_pos = check_nan_umb(group_normal, group_center, group_pos)
             new_feature = torch.cat([group_center, group_normal, group_pos], dim=-1)  # N+P+CP: 10
@@ -370,13 +369,5 @@ class TriangleSurfaceConstructor(nn.Module):
             group_normal, group_center = check_nan_umb(group_normal, group_center)
             new_feature = torch.cat([group_center, group_normal], dim=-1)
         new_feature = new_feature.permute(0, 3, 2, 1)  # [B, C, G, N]
-
-        # aggregation
-        if self.aggr_type == 'max':
-            new_feature = torch.max(new_feature, 2)[0]
-        elif self.aggr_type == 'avg':
-            new_feature = torch.mean(new_feature, 2)
-        else:
-            new_feature = torch.sum(new_feature, 2)
 
         return new_feature
