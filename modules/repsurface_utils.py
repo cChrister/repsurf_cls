@@ -113,7 +113,7 @@ def group_by_umbrella(xyz, new_xyz, k=9, cuda=False):
     """
     Group a set of points into umbrella surfaces
 
-    """ # new_xyz/xyz [64,512,3]; umbrella中k=5
+    """ # new_xyz/xyz [64,512,3]; k=5
     idx = query_knn_point(k, xyz, new_xyz, cuda=cuda)   # knn k-nearest-neighbours/ get neighbours
     torch.cuda.empty_cache() # idx [64,512,5], 这个3是怎么变成5的？
     group_xyz = index_points(xyz, idx, cuda=cuda, is_group=True)[:, :, 1:]  # [B, N', K-1, 3]
@@ -122,42 +122,41 @@ def group_by_umbrella(xyz, new_xyz, k=9, cuda=False):
     group_xyz_norm = group_xyz - new_xyz.unsqueeze(-2)  # new_xyz.unsqueezs(-2) [64,512,1,3]
     # 这边应该是得到edge，这个norm不是法向量而是给他归一化
     # group_xyz_norm [64, 512, 4, 3]
-    # numpy.argsort Returns the indices that would sort an array
-    # group_phi返回一个值，[x,y,z]->1
     group_phi = xyz2sphere(group_xyz_norm)[..., 2]  # [B, N', K-1]/ [64, 512, 4]
     sort_idx = group_phi.argsort(dim=-1)  # [B, N', K-1]/ [64, 512, 4]
 
     # [B, N', K-1, 1, 3]
-    # torch.roll shifts=-1 元素向上或者向下滚动
-    # torch.zeros_likes 生成维度一致内容全为0的tensor
-    # resort_points 根据phi距离排序 group_syz_norm
-    sorted_group_xyz = resort_points(group_xyz_norm, sort_idx).unsqueeze(-2) # [64,512,4,1,3]
-    sorted_group_xyz_roll = torch.roll(sorted_group_xyz, -1, dims=-3)        # [64,512,4,1,3]
-    group_centriod = torch.zeros_like(sorted_group_xyz)                      # [64,512,4,1,3]
-    umbrella_group_xyz = torch.cat([group_centriod, sorted_group_xyz, sorted_group_xyz_roll], dim=-2)
+    sorted_group_xyz = resort_points(group_xyz_norm, sort_idx).unsqueeze(-2)
+    sorted_group_xyz_roll = torch.roll(sorted_group_xyz, -1, dims=-3)
+    group_centriod = torch.zeros_like(sorted_group_xyz)
     # 这一部分在论文中是构建完pairs，pairs = concat([edges, edges.roll(-1, 2)], dim=-2)
-    # torch.cat Concatenates the given sequence of seq tensors in the given dimension
-    # umbrella_group_xyz[B,N,K,2,3] 这里应该是论文写错嘞/ [64,512,4,3,3]
+    umbrella_group_xyz = torch.cat([group_centriod, sorted_group_xyz, sorted_group_xyz_roll], dim=-2)
+
     return umbrella_group_xyz
 
 def group_by_triangle(xyz, new_xyz, k=2, cuda=False):
     """
     Group a set of points into umbrella surfaces
 
-    """ 
+    """
     idx = query_knn_point(k, xyz, new_xyz, cuda=cuda)   # knn k-nearest-neighbours
-    torch.cuda.empty_cache() # [64,512,3]
+    torch.cuda.empty_cache()
     group_xyz = index_points(xyz, idx, cuda=cuda, is_group=True)[:, :, 1:]  # [B, N', K-1, 3]
-    torch.cuda.empty_cache() # [64,512,2,3]
+    torch.cuda.empty_cache()
+
+    group_xyz_norm = group_xyz - new_xyz.unsqueeze(-2)
+    # group_phi = xyz2sphere(group_xyz_norm)[..., 2]  # [B, N', K-1]
+    # sort_idx = group_phi.argsort(dim=-1)  # [B, N', K-1]
 
     group_xyz_norm = group_xyz - new_xyz.unsqueeze(-2) # [64,512,2,3]
-    group_phi = xyz2sphere(group_xyz_norm)[..., 2]     # [B, N', K-1]/ [64, 512, 2]
-    sort_idx = group_phi.argsort(dim=-1)               # [B, N', K-1]/ [64, 512, 2]
-    sorted_group_xyz = resort_points(group_xyz_norm, sort_idx).unsqueeze(-2) # [64,512,2,1,3]
-    sorted_group_xyz_roll = torch.roll(sorted_group_xyz, -1, dims=-3)        # [64,512,2,1,3]
-    group_centriod = torch.zeros_like(sorted_group_xyz)                      # [64,512,2,1,3]
-    triangle_group_xyz = torch.cat([group_centriod, sorted_group_xyz, sorted_group_xyz_roll], dim=-2)
-    return triangle_group_xyz   # [64,512,2,3,3]
+    # group_phi = xyz2sphere(group_xyz_norm)[..., 2]     # [B, N', K-1]/ [64, 512, 2]
+    # sort_idx = group_phi.argsort(dim=-1)               # [B, N', K-1]/ [64, 512, 2]
+    # sorted_group_xyz = resort_points(group_xyz_norm, sort_idx).unsqueeze(-2) # [64,512,2,1,3]
+    # sorted_group_xyz_roll = torch.roll(sorted_group_xyz, -1, dims=-3)        # [64,512,2,1,3]
+    # group_centriod = torch.zeros_like(sorted_group_xyz)                      # [64,512,2,1,3]
+    # triangle_group_xyz = torch.cat([group_centriod, sorted_group_xyz, sorted_group_xyz_roll], dim=-2)
+    return group_xyz_norm   # [64,512,2,3]
+    # 只返回这个就好了，因为只需要一个normal
 
 class SurfaceAbstraction(nn.Module):
     """
@@ -305,15 +304,14 @@ class UmbrellaSurfaceConstructor(nn.Module):
         # surface construction  center(64,512,3)
         group_xyz = group_by_umbrella(center, center, k=self.k, cuda=self.cuda)  # [B, N, K-1, 3 (points), 3 (coord.)]
         # return pairs
-        # group_xyz [64, 512, 4 ,3 ,3]
 
-        # normal [64,512,4,3]
+        # normal
         group_normal = cal_normal(group_xyz, random_inv=self.random_inv, is_group=True)
-        # coordinate [64,512,4,3]
+        # coordinate
         group_center = cal_center(group_xyz)
-        # polar [64,512,4,3]
+        # polar
         group_polar = xyz2sphere(group_center)
-        if self.return_dist: # pos [64,512,4,1]
+        if self.return_dist:
             group_pos = cal_const(group_normal, group_center)
             group_normal, group_center, group_pos = check_nan_umb(group_normal, group_center, group_pos)
             new_feature = torch.cat([group_center, group_polar, group_normal, group_pos], dim=-1)  # N+P+CP: 10
@@ -321,11 +319,9 @@ class UmbrellaSurfaceConstructor(nn.Module):
             group_normal, group_center = check_nan_umb(group_normal, group_center)
             new_feature = torch.cat([group_center, group_polar, group_normal], dim=-1)
         new_feature = new_feature.permute(0, 3, 2, 1)  # [B, C, G, N]
-        # C:output channeis/ G: 应该是group points/ B: batch size/ N: num of points
 
-        # mapping new_feature [64,10,4,512]
+        # mapping
         new_feature = self.mlps(new_feature)
-        # after mlp new_feature [64,10,4,512]
 
         # aggregation
         if self.aggr_type == 'max':
@@ -335,7 +331,7 @@ class UmbrellaSurfaceConstructor(nn.Module):
         else:
             new_feature = torch.sum(new_feature, 2)
 
-        return new_feature # [64,10,512]
+        return new_feature
 
 class TriangleSurfaceConstructor(nn.Module):
     """
@@ -354,20 +350,21 @@ class TriangleSurfaceConstructor(nn.Module):
     def forward(self, center):
         center = center.permute(0, 2, 1) # permute好像是改变维度顺序
         group_xyz = group_by_triangle(center, center, k=self.k, cuda=self.cuda)
-        # [64,512,2,3,3]
-        # normal [64,512,2,3]
+        # [64,512,2,3]
+        # normal [64,512,3]
         group_normal = cal_normal(group_xyz, random_inv=self.random_inv, is_group=True)
-        # centroids [64,512,2,3]
+        # centroids [64,512,3]
         group_center = cal_center(group_xyz)
-        if self.return_dist:
+        if self.return_dist: # [64,512,1]
             # positions = sum(normals*centroids, dim=2)/sqrt(3) 位置编码？
-            group_pos = cal_const(group_normal, group_center) # [64,512,2,1]
+            group_pos = cal_const(group_normal, group_center)
             # 去除 group_normal,group_center,group_pos中 Nan
-            group_normal, group_center, group_pos = check_nan_umb(group_normal, group_center, group_pos)
+            # 注意这里使用check_nan，如果使用check_nan_umb会发生错误
+            group_normal, group_center, group_pos = check_nan(group_normal, group_center, group_pos)
             new_feature = torch.cat([group_center, group_normal, group_pos], dim=-1)  # N+P+CP: 10
         else:
             group_normal, group_center = check_nan_umb(group_normal, group_center)
             new_feature = torch.cat([group_center, group_normal], dim=-1)
-        new_feature = new_feature.permute(0, 3, 2, 1)  # [B, C, G, N]
-
+            # [B, C, N] / [64,512,7]
+        new_feature = new_feature.permute(0, 2, 1)
         return new_feature

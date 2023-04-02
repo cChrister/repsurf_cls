@@ -5,28 +5,23 @@ Date: 05/10/2022
 
 import torch.nn as nn
 import torch.nn.functional as F
-from modules.repsurface_utils import SurfaceAbstractionCD, UmbrellaSurfaceConstructor
-from modules.repsurface_utils import TriangleSurfaceConstructor
-
+from modules.repsurface_utils import SurfaceAbstractionCD, TriangleSurfaceConstructor
 
 class Model(nn.Module):
     def __init__(self, args):
         super(Model, self).__init__()
         center_channel = 0 if not args.return_center else (6 if args.return_polar else 3)
-        repsurf_channel = 10
+        repsurf_channel = 7
 
         self.init_nsample = args.num_point
         self.return_dist = args.return_dist
         # --group_size', type=int, default=8, help='Size of umbrella group [default: 8]
         #'--return_dist', help='Whether to use signed distance [default: False]')
         #'--return_center',help='Whether to return center in surface abstraction [default: False]')
-        # repsurf_channel = 10
-        self.surface_constructor = UmbrellaSurfaceConstructor(args.group_size + 1, repsurf_channel,
+        # repsurf_channel = feat_channel = 10
+        self.surface_constructor = TriangleSurfaceConstructor(args.group_size + 1, repsurf_channel,
                                                               return_dist=args.return_dist, aggr_type=args.umb_pool,
                                                               cuda=args.cuda_ops)
-        self.surface_constructor2 = TriangleSurfaceConstructor(args.group_size+1, repsurf_channel,
-                                                                return_dist=args.return_dist, aggr_type=args.umb_pool,
-                                                                cuda=args.cuda_ops)
         self.sa1 = SurfaceAbstractionCD(npoint=512, radius=0.2, nsample=32, feat_channel=repsurf_channel,
                                         pos_channel=center_channel, mlp=[64, 64, 128], group_all=False,
                                         return_polar=args.return_polar, cuda=args.cuda_ops)
@@ -56,8 +51,7 @@ class Model(nn.Module):
         center = points[:, :3, :]   # 中间的坐标 y? 啥意思啊？
 
         normal = self.surface_constructor(center)
-        # normal = self.surface_constructor2(center)
-        # [64,10,512]
+        # [64,7,512]
 
         center, normal, feature = self.sa1(center, normal, None) # [64,3,512] / [] / []
         center, normal, feature = self.sa2(center, normal, feature) # [64,3,128] / [64,10,128] / [64,256,128]
